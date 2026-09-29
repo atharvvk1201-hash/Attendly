@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Attendly</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style>
+*{box-sizing:border-box}
+:root{--b:#1d3a6e;--g:#12805c;--r:#c0392b;--l:#e2e6ef}
+body{margin:0;font:15px/1.4 system-ui,-apple-system,sans-serif;background:#f4f6fb;color:#14213d;padding-bottom:72px}
+.wrap{max-width:560px;margin:0 auto;padding:14px}
+.card{background:#fff;border:1px solid var(--l);border-radius:16px;padding:14px;margin-bottom:12px}
+h1,h2,h3{margin:0}
+button,input{font:inherit;color:inherit}
+input{width:100%;padding:12px;border:1px solid #cfd6e4;border-radius:12px;margin:6px 0;background:#fff}
+button{border:1px solid var(--l);background:#fff;border-radius:12px;padding:10px 12px;cursor:pointer}
+button:disabled{opacity:.35}
+.pri{background:var(--b);color:#fff;border-color:var(--b);width:100%}
+.row{display:flex;gap:8px;align-items:center}.sp{justify-content:space-between}
+.acts{display:flex;gap:6px;margin-top:10px}.acts button{flex:1;padding:10px 2px;font-size:13px}
+.st-p{background:#e3f6ee;color:var(--g)}.st-a{background:#fdeaea;color:var(--r)}.st-x{background:#eef0f4;color:#4b5563}
+.on{outline:2px solid currentColor}
+.bar{height:8px;background:var(--l);border-radius:8px;overflow:hidden;margin-top:8px}.bar i{display:block;height:100%;background:var(--b)}
+.mut{color:#6b7690;font-size:13px}.big{font-size:34px;font-weight:700}
+.tag{padding:3px 9px;border-radius:99px;font-size:12px}
+nav{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--l);display:flex}
+nav button{flex:1;border:0;border-radius:0;padding:15px}nav .cur{color:var(--b);font-weight:700}
+.err{color:var(--r);font-size:13px;min-height:18px}
+table{width:100%;border-collapse:collapse}td,th{padding:8px 4px;text-align:left;border-bottom:1px solid var(--l);font-size:14px}
+</style></head>
+<body><div id="app"></div>
+<script>
+const SB=supabase.createClient('https://anvfwfjekygqbelkuscs.supabase.co','sb_publishable_HlPtQSpODMf3yE0Oz8ewDQ_PJcJrq1j');
+// Term II timetable: weekday -> [slot, subject]; slot 2..5 (Office Hours omitted)
+const TT={1:[[2,'MEP'],[4,'WEC']],2:[[2,'MPI'],[3,'MSM'],[4,'ODC']],3:[[2,'MEP'],[3,'MAC'],[4,'OM'],[5,'WEC']],4:[[2,'MPI'],[3,'MSM'],[4,'ODC']],5:[[3,'MAC'],[4,'OM']]};
+const SLOT={2:'10:15 – 11:45 AM',3:'12:00 – 1:30 PM',4:'2:15 – 3:45 PM',5:'4:00 – 5:30 PM'};
+const SUBJ={MEP:'Macroeconomic Environment & Policy',MPI:'Marketing Practices & Implementation',MSM:'Management Science Models',ODC:'Organization Design & Change',MAC:'Management Accounting & Control',OM:'Operations Management',WEC:'Written Executive Communication'};
+const START='2026-09-28',END='2026-12-24';
+const S={tab:'today',date:new Date(),att:{},detail:null,stu:null};let A=null;
+
+const $=s=>document.querySelector(s);
+const ymd=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pct=(p,a)=>p+a?Math.round(p/(p+a)*1000)/10:0;
+const mail=r=>r.replace(/[^a-z0-9]/gi,'').toLowerCase()+'@attendly.app';
+const classesOn=d=>{const k=ymd(d);if(k<START||k>END)return[];const w=d.getDay();return(TT[w]||[]).map(([s,c])=>({id:w+'_'+s+'_'+c,subj:c,slot:s}))};
+function stats(rows){
+  const by={};Object.keys(SUBJ).forEach(k=>by[k]={p:0,a:0,x:0});
+  rows.forEach(r=>{const s=by[r.subject_id];if(!s)return;if(r.status==='present')s.p++;else if(r.status==='absent')s.a++;else s.x++});
+  const P=Object.values(by).reduce((n,s)=>n+s.p,0),Ab=Object.values(by).reduce((n,s)=>n+s.a,0);
+  return{by,P,A:Ab,pct:pct(P,Ab)};
+}
+async function fetchAll(qf){let all=[],i=0;for(;;){const{data,error}=await qf().range(i,i+999);if(error)throw error;all=all.concat(data);if(data.length<1000)break;i+=1000}return all}
+
+/* ---------- auth ---------- */
+function authView(msg,reg){
+  $('#app').innerHTML=`<div class="wrap"><h1 style="margin:40px 0 4px">Attendly</h1><div class="mut" style="margin-bottom:16px">MDI Gurgaon · Term II attendance</div>
+  <div class="card"><h3>${reg?'Create account':'Log in'}</h3>
+  <input id="roll" placeholder="Roll number" autocapitalize="characters" autocomplete="username">
+  ${reg?'<input id="nm" placeholder="Full name" autocomplete="name">':''}
+  <input id="pw" type="password" placeholder="Password (min 6 characters)" autocomplete="${reg?'new-password':'current-password'}">
+  <div class="err">${esc(msg||'')}</div>
+  <button class="pri" onclick="${reg?'signup()':'login()'}">${reg?'Register':'Log in'}</button>
+  <p class="mut" style="text-align:center;margin:12px 0 0">${reg?`Have an account? <a href="#" onclick="authView('',false);return false">Log in</a>`:`New here? <a href="#" onclick="authView('',true);return false">Create account</a>`}</p></div>
+  <p class="mut">Your attendance is visible to you and the batch admin.</p></div>`;
+}
+async function signup(){
+  const roll=$('#roll').value.trim().toUpperCase(),name=$('#nm').value.trim(),pw=$('#pw').value;
+  if(!mail(roll).startsWith('@')&&name&&pw.length>=6){
+    const{data,error}=await SB.auth.signUp({email:mail(roll),password:pw,options:{data:{roll_no:roll,name}}});
+    if(error)return authView(/registered/i.test(error.message)?'That roll number is already registered. Log in instead.':error.message,true);
+    if(!data.session)return authView('Account created, but no session started. Turn off "Confirm email" in Supabase.',true);
+    return loadUser(data.user);
+  }
+  authView('Enter your roll number, name and a password of 6+ characters.',true);
+}
+async function login(){
+  const roll=$('#roll').value.trim(),pw=$('#pw').value;
+  const{data,error}=await SB.auth.signInWithPassword({email:mail(roll),password:pw});
+  if(error)return authView('Wrong roll number or password.',false);
+  loadUser(data.user);
+}
+async function logout(){await SB.auth.signOut();S.att={};S.tab='today';S.detail=S.stu=null;A=null;authView()}
+async function loadUser(u){
+  try{
+    const{data:p,error}=await SB.from('profiles').select('*').eq('id',u.id).single();
+    if(error)throw error;
+    const rows=await fetchAll(()=>SB.from('attendance').select('class_date,class_id,subject_id,status').eq('user_id',u.id).order('class_date').order('class_id'));
+    S.user=u;S.profile=p;S.att={};rows.forEach(r=>S.att[r.class_date+'_'+r.class_id]=r);
+    render();
+  }catch(e){await SB.auth.signOut();authView('Could not load your account: '+e.message)}
+}
+
+/* ---------- student views ---------- */
+const tab=(t,l)=>`<button class="${S.tab===t?'cur':''}" onclick="S.tab='${t}';S.detail=null;S.stu=null;render()">${l}</button>`;
+function shell(inner){
+  $('#app').innerHTML=`<div class="wrap"><div class="row sp" style="margin-bottom:12px"><div><h2>Attendly</h2><div class="mut">${esc(S.profile.name)} · ${esc(S.profile.roll_no)}</div></div><button onclick="logout()">Log out</button></div>${inner}</div>
+  <nav>${tab('today','Today')}${tab('subjects','Subjects')}${S.profile.is_admin?tab('admin','Admin'):''}</nav>`;
+}
+function render(){({today:todayView,subjects:subjectsView,admin:adminView})[S.tab]()}
+const btns=(cid,sj,d,v)=>['present','absent','cancelled'].map((s,i)=>`<button class="st-${'pax'[i]}${v===s?' on':''}" style="${v&&v!==s?'opacity:.45':''}" onclick="mark('${cid}','${sj}','${d}','${v===s?'':s}')">${['✓ Present','✕ Absent','⊘ Cancelled'][i]}</button>`).join('');
+const overall=()=>{const t=stats(Object.values(S.att));return`<div class="card"><div class="mut">Overall attendance</div><div class="big">${t.pct}%</div><div class="mut">${t.P} present · ${t.A} absent (cancelled classes not counted)</div><div class="bar"><i style="width:${t.pct}%"></i></div></div>`};
+
+function todayView(){
+  const d=S.date,k=ymd(d),isT=k===ymd(new Date()),cs=classesOn(d);
+  const cards=cs.map(c=>{const v=(S.att[k+'_'+c.id]||{}).status;
+    return`<div class="card"><div class="row sp"><div><b>${c.subj}</b><div class="mut">${SUBJ[c.subj]}<br>${SLOT[c.slot]}</div></div>${v?`<span class="tag st-${v[0]==='p'?'p':v[0]==='a'?'a':'x'}">${v}</span>`:''}</div><div class="acts">${btns(c.id,c.subj,k,v)}</div></div>`}).join('');
+  shell(`<div class="row" style="margin-bottom:12px"><button onclick="shiftDay(-1)">‹</button><input id="dp" type="date" value="${k}" max="${ymd(new Date())}" onchange="pickDay(this.value)" style="margin:0"><button onclick="shiftDay(1)" ${isT?'disabled':''}>›</button>${isT?'':'<button onclick="S.date=new Date();render()">Today</button>'}</div>
+  ${overall()}<h3 style="margin:4px 0 10px">${isT?"Today's classes":d.toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'short'})}</h3>
+  ${cards||'<div class="card mut">No classes scheduled on this day.</div>'}`);
+}
+function shiftDay(n){const d=new Date(S.date.getFullYear(),S.date.getMonth(),S.date.getDate()+n);if(ymd(d)>ymd(new Date()))return;S.date=d;render()}
+function pickDay(v){if(!v||v>ymd(new Date()))return;S.date=new Date(v+'T00:00:00');render()}
+async function mark(cid,sj,d,st){
+  const k=d+'_'+cid;
+  if(st)S.att[k]={class_date:d,class_id:cid,subject_id:sj,status:st};else delete S.att[k];
+  render();
+  const id=S.user.id;
+  const{error}=st?await SB.from('attendance').upsert({user_id:id,class_date:d,class_id:cid,subject_id:sj,status:st},{onConflict:'user_id,class_date,class_id'}):await SB.from('attendance').delete().match({user_id:id,class_date:d,class_id:cid});
+  if(error){alert('Could not save: '+error.message);loadUser(S.user)}
+}
+function subjectsView(){
+  const st=stats(Object.values(S.att));
+  if(S.detail){
+    const j=S.detail,s=st.by[j],rows=Object.values(S.att).filter(r=>r.subject_id===j).sort((a,b)=>(b.class_date+b.class_id).localeCompare(a.class_date+a.class_id));
+    return shell(`<button onclick="S.detail=null;render()">← All subjects</button>
+    <div class="card" style="margin-top:12px"><h3>${j}</h3><div class="mut">${SUBJ[j]}</div><div class="big">${pct(s.p,s.a)}%</div><div class="mut">${s.p} present · ${s.a} absent · ${s.x} cancelled</div><div class="bar"><i style="width:${pct(s.p,s.a)}%"></i></div></div>
+    <h3 style="margin:4px 0 10px">History</h3>
+    ${rows.map(r=>`<div class="card"><b>${new Date(r.class_date+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'})}</b> <span class="mut">${SLOT[r.class_id.split('_')[1]]||''}</span><div class="acts">${btns(r.class_id,j,r.class_date,r.status)}</div></div>`).join('')||'<div class="card mut">Nothing marked yet. Mark classes from the Today tab.</div>'}`);
+  }
+  shell(overall()+Object.keys(SUBJ).map(k=>{const s=st.by[k],p=pct(s.p,s.a);
+    return`<div class="card" onclick="S.detail='${k}';render()" style="cursor:pointer"><div class="row sp"><div><b>${k}</b><div class="mut">${SUBJ[k]}</div><div class="mut">${s.p}/${s.p+s.a} attended${s.x?' · '+s.x+' cancelled':''}</div></div><b>${p}%</b></div><div class="bar"><i style="width:${p}%"></i></div></div>`}).join(''));
+}
+
+/* ---------- admin ---------- */
+async function adminView(){
+  if(!S.profile.is_admin)return;
+  if(S.stu)return stuView();
+  if(!A){
+    shell('<div class="card mut">Loading students…</div>');
+    try{
+      const ps=await fetchAll(()=>SB.from('profiles').select('id,roll_no,name').order('roll_no'));
+      const rs=await fetchAll(()=>SB.from('attendance').select('user_id,class_date,class_id,subject_id,status').order('user_id').order('class_date').order('class_id'));
+      const g={};rs.forEach(r=>(g[r.user_id]=g[r.user_id]||[]).push(r));
+      A=ps.map(p=>({...p,st:stats(g[p.id]||[])}));
+    }catch(e){return shell('<div class="card err">'+esc(e.message)+'</div>')}
+  }
+  shell(`<input id="q" placeholder="Search roll number or name" oninput="alist()">
+  <div class="row sp" style="margin:6px 0 10px"><span class="mut" id="cnt"></span><span class="row"><button onclick="A=null;render()">Refresh</button><button onclick="csv()">Export CSV</button></span></div><div class="card" id="alist"></div>`);
+  alist();
+}
+function alist(){
+  const q=($('#q').value||'').toLowerCase(),L=A.filter(p=>(p.roll_no+' '+p.name).toLowerCase().includes(q));
+  $('#cnt').textContent=L.length+' students';
+  $('#alist').innerHTML=L.length?`<table>${L.map(p=>`<tr><td><b>${esc(p.roll_no)}</b><div class="mut">${esc(p.name)}</div></td><td><b>${p.st.pct}%</b></td><td style="text-align:right"><button onclick="S.stu='${p.id}';render()">View</button></td></tr>`).join('')}</table>`:'<div class="mut">No students found.</div>';
+}
+function stuView(){
+  const p=A.find(x=>x.id===S.stu),t=p.st;
+  shell(`<button onclick="S.stu=null;render()">← All students</button>
+  <div class="card" style="margin-top:12px"><h3>${esc(p.name)}</h3><div class="mut">${esc(p.roll_no)}</div><div class="big">${t.pct}%</div><div class="mut">${t.P} present · ${t.A} absent</div></div>
+  <div class="card"><table><tr><th>Subject</th><th>P</th><th>A</th><th>Canc.</th><th>%</th></tr>${Object.keys(SUBJ).map(k=>{const s=t.by[k];return`<tr><td><b>${k}</b></td><td>${s.p}</td><td>${s.a}</td><td>${s.x}</td><td><b>${pct(s.p,s.a)}%</b></td></tr>`}).join('')}</table></div>`);
+}
+function csv(){
+  const ks=Object.keys(SUBJ),H=['Roll No','Name','Overall %',...ks.flatMap(k=>[k+' present',k+' absent',k+' %'])];
+  const R=A.map(p=>[p.roll_no,p.name,p.st.pct,...ks.flatMap(k=>{const s=p.st.by[k];return[s.p,s.a,pct(s.p,s.a)]})]);
+  const q=v=>'"'+String(v).replace(/^([=+\-@])/,"'$1").replace(/"/g,'""')+'"';
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob(['\ufeff'+[H,...R].map(r=>r.map(q).join(',')).join('\n')],{type:'text/csv'}));
+  a.download='attendly-'+ymd(new Date())+'.csv';a.click();
+}
+
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&$('.pri'))$('.pri').click()});
+(async()=>{const{data:{session}}=await SB.auth.getSession();session?loadUser(session.user):authView()})();
+</script></body></html>
